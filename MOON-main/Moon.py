@@ -1,7 +1,6 @@
 import numpy as np
 import json
 import torch
-import torch.nn.functional as F
 import torch.optim as optim
 import torch.nn as nn
 import argparse
@@ -10,7 +9,6 @@ import os
 import copy
 import datetime
 import random
-from torch.autograd import grad
 
 
 from model import *
@@ -108,7 +106,6 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 
 
 def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args_optimizer, args, device="cpu"):
-    criterion = nn.CrossEntropyLoss().cuda()
     net = nn.DataParallel(net)
     net.cuda()
     logger.info('Training network %s' % str(net_id))
@@ -130,7 +127,7 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args_o
     elif args_optimizer == 'sgd':
         optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=0.9,
                               weight_decay=args.reg)
-    
+    criterion = nn.CrossEntropyLoss().cuda()
 
     cnt = 0
 
@@ -177,7 +174,6 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args_o
 def train_net_fedprox(net_id, net, global_net, train_dataloader, test_dataloader, epochs, lr, args_optimizer, mu, args,
                       device="cpu"):
     # global_net.to(device)
-    criterion = nn.CrossEntropyLoss().cuda()
     net = nn.DataParallel(net)
     net.cuda()
     # else:
@@ -201,7 +197,7 @@ def train_net_fedprox(net_id, net, global_net, train_dataloader, test_dataloader
         optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=0.9,
                               weight_decay=args.reg)
 
-    
+    criterion = nn.CrossEntropyLoss().cuda()
 
     cnt = 0
     global_weight_collector = list(global_net.cuda().parameters())
@@ -251,7 +247,6 @@ def train_net_fedcon(net_id, net, global_net, previous_nets, train_dataloader, t
                       round, device="cpu"):
     net = nn.DataParallel(net)
     net.cuda()
-    criterion = nn.CrossEntropyLoss().cuda()
     logger.info('Training network %s' % str(net_id))
     logger.info('n_training: %d' % len(train_dataloader))
     logger.info('n_test: %d' % len(test_dataloader))
@@ -273,7 +268,7 @@ def train_net_fedcon(net_id, net, global_net, previous_nets, train_dataloader, t
         optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=0.9,
                               weight_decay=args.reg)
 
-    
+    criterion = nn.CrossEntropyLoss().cuda()
     # global_net.to(device)
 
     for previous_net in previous_nets:
@@ -345,10 +340,9 @@ def train_net_fedcon(net_id, net, global_net, previous_nets, train_dataloader, t
     return train_acc, test_acc
 
 
-def local_train_net(nets, args, net_dataidx_map, train_dl=None, test_dl=None, global_model=None, prev_model_pool=None, server_c=None, clients_c=None, round=None, device="cpu"):
+def local_train_net(nets, args, net_dataidx_map, train_dl=None, test_dl=None, global_model = None, prev_model_pool = None, server_c = None, clients_c = None, round=None, device="cpu"):
     avg_acc = 0.0
     acc_list = []
-    malicious_client_id = 0  # Assuming client 0 is malicious
     if global_model:
         global_model.cuda()
     if server_c:
@@ -358,26 +352,27 @@ def local_train_net(nets, args, net_dataidx_map, train_dl=None, test_dl=None, gl
     for net_id, net in nets.items():
         dataidxs = net_dataidx_map[net_id]
 
-        # Malicious client behavior: simulate by slightly altering the parameters
-        if net_id == malicious_client_id:
-            with torch.no_grad():
-                for param in net.parameters():
-                    param.data += torch.randn_like(param.data) * 0.01  # Small perturbation
-            # Proceed with training to not make the malicious activity obvious
         logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
         train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs)
+        train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
         n_epoch = args.epochs
 
         if args.alg == 'fedavg':
-            trainacc, testacc = train_net(net_id, net, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, args, device=device)
+            trainacc, testacc = train_net(net_id, net, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, args,
+                                        device=device)
         elif args.alg == 'fedprox':
-            trainacc, testacc = train_net_fedprox(net_id, net, global_model, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, args.mu, args, device=device)
+            trainacc, testacc = train_net_fedprox(net_id, net, global_model, train_dl_local, test_dl, n_epoch, args.lr,
+                                                  args.optimizer, args.mu, args, device=device)
         elif args.alg == 'moon':
-            prev_models = [prev_model_pool[i][net_id] for i in range(len(prev_model_pool))]
-            trainacc, testacc = train_net_fedcon(net_id, net, global_model, prev_models, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, args.mu, args.temperature, args, round, device=device)
-        elif args.alg == 'local_training':
-            trainacc, testacc = train_net(net_id, net, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, args, device=device)
+            prev_models=[]
+            for i in range(len(prev_model_pool)):
+                prev_models.append(prev_model_pool[i][net_id])
+            trainacc, testacc = train_net_fedcon(net_id, net, global_model, prev_models, train_dl_local, test_dl, n_epoch, args.lr,
+                                                  args.optimizer, args.mu, args.temperature, args, round, device=device)
 
+        elif args.alg == 'local_training':
+            trainacc, testacc = train_net(net_id, net, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, args,
+                                          device=device)
         logger.info("net %d final test acc %f" % (net_id, testacc))
         avg_acc += testacc
         acc_list.append(testacc)
@@ -392,61 +387,6 @@ def local_train_net(nets, args, net_dataidx_map, train_dl=None, test_dl=None, gl
             server_c_collector[param_index] = new_server_c_collector[param_index]
         server_c.to('cpu')
     return nets
-
-#python main4.py --dataset=cifar10 --model=simple-cnn --alg=moon --sample_fraction=0.5 --lr=0.01 --mu=5 --epochs=10 --comm_round=50 --n_parties=10 --partition=noniid --beta=0.5 --logdir='./logs/' --device='cuda'
-
-def likelihood_function(x, y):
-    product_sigmoid_x = torch.prod(torch.sigmoid(x))
-
-    product_sigmoid_y = torch.prod(torch.sigmoid(1 - y))
-
-    return product_sigmoid_x * product_sigmoid_y
-
-def simul(prev_clients, curr_clients, party_weights, learning_rate):
-    x_client = [element for element in curr_clients if element not in prev_clients]
-    y_client = [element for element in prev_clients if element not in curr_clients]
-
-    x_values = [party_weights[element] for element in x_client]
-    y_values = [party_weights[element] for element in y_client]
-
-    x = torch.tensor(x_values, dtype=torch.float32, requires_grad=True)
-    y = torch.tensor(y_values, dtype=torch.float32, requires_grad=True)
-
-    epc = 100
-    while epc > 0:
-        output = likelihood_function(x, y)
-        prev_val = output.item()
-        output.backward()
-
-        x.data = x.data + learning_rate * x.grad.data
-        y.data = y.data + learning_rate * y.grad.data
-
-        x.grad.zero_()
-        y.grad.zero_()
-
-        # Update party_weights
-        prev_party_weights = party_weights.copy()
-        for i, element in enumerate(x_client):
-            party_weights[element] = x[i].item()
-        
-        for i, element in enumerate(y_client):
-            party_weights[element] = y[i].item()
-
-        party_weights = np.array(party_weights)  
-        for i in range(len(party_weights)):
-            party_weights[i] = np.exp(party_weights[i])
-            
-        party_weights /= party_weights.sum() 
-
-        output1 = likelihood_function(x, y)
-        if output1.item() < prev_val:
-            party_weights = prev_party_weights
-            break
-
-        epc -= 1
-
-    return party_weights
-
 
 
 if __name__ == '__main__':
@@ -490,11 +430,9 @@ if __name__ == '__main__':
     n_party_per_round = int(args.n_parties * args.sample_fraction)
     party_list = [i for i in range(args.n_parties)]
     party_list_rounds = []
-    party_weights = [1 / args.n_parties for i in range(args.n_parties)]
-    party_weights = np.array(party_weights, dtype = 'float32')
     if n_party_per_round != args.n_parties:
         for i in range(args.comm_round):
-            party_list_rounds.append(random.choices(party_list,weights = party_weights, k = n_party_per_round))
+            party_list_rounds.append(random.sample(party_list, n_party_per_round))
     else:
         for i in range(args.comm_round):
             party_list_rounds.append(party_list)
@@ -505,9 +443,6 @@ if __name__ == '__main__':
                                                                                args.datadir,
                                                                                args.batch_size,
                                                                                32)
-
-    #touch main3.py
-    #python main3.py --dataset=cifar10 --model=simple-cnn --alg=moon --lr=0.01 --mu=5 --epochs=10 --comm_round=100 --n_parties=10 --partition=noniid --beta=0.5 --logdir='./logs/' --device='cpu'
 
     print("len train_dl_global:", len(train_ds_global))
     train_dl=None
@@ -543,20 +478,10 @@ if __name__ == '__main__':
                     net.eval()
                     for param in net.parameters():
                         param.requires_grad = False
-        
 
-        prev_acc = -1
-
-        prev_round = []
-
-        learning_rate = 0.01
-        
         for round in range(n_comm_rounds):
             logger.info("in comm round:" + str(round))
-            #party_list_this_round = party_list_rounds[round]
-            #party_list_this_round = random.choices(party_list, weights = party_weights, k = n_party_per_round, replace = False)
-            party_weights = party_weights / np.sum(party_weights)
-            party_list_this_round = np.random.choice(party_list, size=min(n_party_per_round, len(party_list)), replace=False, p=party_weights)
+            party_list_this_round = party_list_rounds[round]
 
             global_model.eval()
             for param in global_model.parameters():
@@ -566,18 +491,17 @@ if __name__ == '__main__':
             if args.server_momentum:
                 old_w = copy.deepcopy(global_model.state_dict())
 
-            # nets_this_round = {k: nets[k] for k in party_list_this_round}
-            nets_this_round = {k: nets[k] for k in party_list_this_round if k in nets}
-
+            nets_this_round = {k: nets[k] for k in party_list_this_round}
             for net in nets_this_round.values():
                 net.load_state_dict(global_w)
+
 
             local_train_net(nets_this_round, args, net_dataidx_map, train_dl=train_dl, test_dl=test_dl, global_model = global_model, prev_model_pool=old_nets_pool, round=round, device=device)
 
 
 
-            total_data_points = sum([len(net_dataidx_map[r]) for r in party_list_this_round if r in net_dataidx_map])
-            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in party_list_this_round if r in net_dataidx_map]
+            total_data_points = sum([len(net_dataidx_map[r]) for r in party_list_this_round])
+            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in party_list_this_round]
 
 
             for net_id, net in enumerate(nets_this_round.values()):
@@ -604,27 +528,6 @@ if __name__ == '__main__':
             global_model.cuda()
             train_acc, train_loss = compute_accuracy(global_model, train_dl_global, device=device)
             test_acc, conf_matrix, _ = compute_accuracy(global_model, test_dl, get_confusion_matrix=True, device=device)
-
-            
-            if prev_acc == -1:
-                prev_acc = test_acc
-                prev_round = party_list_this_round
-    
-            elif(test_acc > prev_acc):
-                party_weights = simul(prev_round, party_list_this_round, party_weights, learning_rate)
-                prev_acc = test_acc
-                prev_round = party_list_this_round
-
-            else:
-                party_weights = simul(party_list_this_round, prev_round, party_weights, learning_rate)
-                prev_round = party_list_this_round
-                prev_acc = test_acc
-            
-            if(round == 25):
-                round /= 2
-            if(round == 30):
-                round /= 5
-                
             global_model.to('cpu')
             logger.info('>> Global Model Train accuracy: %f' % train_acc)
             logger.info('>> Global Model Test accuracy: %f' % test_acc)
@@ -654,7 +557,7 @@ if __name__ == '__main__':
                 torch.save(nets[0].state_dict(), args.modeldir+'fedcon/localmodel0'+args.log_file_name+'.pth')
                 for nets_id, old_nets in enumerate(old_nets_pool):
                     torch.save({'pool'+ str(nets_id) + '_'+'net'+str(net_id): net.state_dict() for net_id, net in old_nets.items()}, args.modeldir+'fedcon/prev_model_pool_'+args.log_file_name+'.pth')
-        
+
 
     elif args.alg == 'fedavg':
         for round in range(n_comm_rounds):
@@ -671,8 +574,8 @@ if __name__ == '__main__':
 
             local_train_net(nets_this_round, args, net_dataidx_map, train_dl=train_dl, test_dl=test_dl, device=device)
 
-            total_data_points = sum([len(net_dataidx_map[r]) for r in party_list_this_round if r in net_dataidx_map])
-            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in party_list_this_round if r in net_dataidx_map]
+            total_data_points = sum([len(net_dataidx_map[r]) for r in party_list_this_round])
+            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in party_list_this_round]
 
             for net_id, net in enumerate(nets_this_round.values()):
                 net_para = net.state_dict()
@@ -714,7 +617,7 @@ if __name__ == '__main__':
             logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
             global_w = global_model.state_dict()
-            nets_this_round = {k: nets[k] for k in party_list_this_round if k in nets}
+            nets_this_round = {k: nets[k] for k in party_list_this_round}
             for net in nets_this_round.values():
                 net.load_state_dict(global_w)
 
@@ -723,8 +626,8 @@ if __name__ == '__main__':
             global_model.to('cpu')
 
             # update global model
-            total_data_points = sum([len(net_dataidx_map[r]) for r in party_list_this_round if r in net_dataidx_map])
-            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in party_list_this_round if r in net_dataidx_map]
+            total_data_points = sum([len(net_dataidx_map[r]) for r in party_list_this_round])
+            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in party_list_this_round]
 
             for net_id, net in enumerate(nets_this_round.values()):
                 net_para = net.state_dict()
